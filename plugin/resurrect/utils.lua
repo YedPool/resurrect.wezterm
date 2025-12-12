@@ -69,19 +69,19 @@ function utils.execute(cmd)
 end
 
 -- Shell-safe wrapper around mkdir for a single already-assembled path segment.
--- On Unix, single-quote wrapping is used so that spaces and most metacharacters
--- are inert; embedded single quotes are escaped with the '\'' idiom.
--- On Windows, " is not a valid NTFS filename character so we validate and reject
--- rather than attempt to escape it; remaining quoting via double-quotes is safe.
+-- Uses wezterm.run_child_process instead of os.execute to avoid visible
+-- cmd.exe window flashes on Windows (fixes #125).
 local function shell_mkdir(path)
 	if utils.is_windows then
 		if path:find('"') then
 			return false
 		end
-		return os.execute('mkdir "' .. path .. '"')
+		local success, _, _ = wezterm.run_child_process({ "cmd.exe", "/c", "mkdir", path })
+		return success
 	else
 		local quoted = "'" .. path:gsub("'", "'\\''") .. "'"
-		return os.execute("mkdir " .. quoted)
+		local success, _, _ = wezterm.run_child_process({ "sh", "-c", "mkdir " .. quoted })
+		return success
 	end
 end
 
