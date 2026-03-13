@@ -119,9 +119,8 @@ local function insert_panes(root, panes)
 			-- node, etc.), that child becomes the foreground process and
 			-- find_handler misses Claude Code. The pane-session file written
 			-- by Claude Code's SessionStart hook is the reliable signal.
-			local pane_session = nil
 			if not has_handler then
-				pane_session = process_handlers.read_pane_session(root.pane:pane_id())
+				local pane_session = process_handlers.read_pane_session(root.pane:pane_id())
 				if pane_session and pane_session.session_id then
 					has_handler = true
 					-- Build synthetic process_info since the foreground
