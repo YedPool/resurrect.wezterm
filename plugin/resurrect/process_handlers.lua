@@ -125,7 +125,7 @@ end
 -- containing { session_id, transcript_path, cwd, hook_event_name, source }.
 ---@param pane_id number|string WezTerm pane ID
 ---@return table|nil session_data parsed JSON or nil on failure
-local function read_pane_session(pane_id)
+function pub.read_pane_session(pane_id)
 	if not pane_id then
 		return nil
 	end
@@ -235,7 +235,7 @@ pub.register({
 		-- Fall back to the pane-sessions file written by the SessionStart hook.
 		-- This covers fresh sessions that were started without --resume.
 		if not session_id and pane_id then
-			local session_data = read_pane_session(pane_id)
+			local session_data = pub.read_pane_session(pane_id)
 			if session_data and session_data.session_id then
 				session_id = session_data.session_id
 			end

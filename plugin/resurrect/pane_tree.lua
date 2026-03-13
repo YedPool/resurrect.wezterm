@@ -111,12 +111,29 @@ local function insert_panes(root, panes)
 			-- See: https://github.com/MLFlexer/resurrect.wezterm/issues/41
 			root.alt_screen_active = root.pane:is_alt_screen_active()
 
-			-- Also check if the foreground process has a registered handler
-			-- (e.g., Claude Code). Some TUI apps don't use the alt screen
-			-- buffer, but we still need to save their process info for
-			-- proper restoration instead of dumping scrollback text.
 			local process_info = root.pane:get_foreground_process_info()
 			local has_handler = process_handlers.find_handler(process_info)
+
+			-- If the foreground process doesn't match a handler, check the
+			-- pane-session file. When Claude Code runs a child process (bash,
+			-- node, etc.), that child becomes the foreground process and
+			-- find_handler misses Claude Code. The pane-session file written
+			-- by Claude Code's SessionStart hook is the reliable signal.
+			local pane_session = nil
+			if not has_handler then
+				pane_session = process_handlers.read_pane_session(root.pane:pane_id())
+				if pane_session and pane_session.session_id then
+					has_handler = true
+					-- Build synthetic process_info since the foreground
+					-- process is a child (bash, etc.), not claude itself.
+					process_info = {
+						name = "claude",
+						executable = "claude",
+						argv = {},
+						cwd = process_info.cwd or "",
+					}
+				end
+			end
 
 			if root.alt_screen_active or has_handler then
 				process_info.children = nil
