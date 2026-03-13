@@ -61,7 +61,9 @@ function pub.periodic_save(opts)
 		local ok, err = pcall(function()
 			wezterm.emit("resurrect.state_manager.periodic_save.start", opts)
 			if opts.save_workspaces then
-				pub.save_state(require("resurrect.workspace_state").get_workspace_state())
+				local workspace_state = require("resurrect.workspace_state").get_workspace_state()
+				pub.save_state(workspace_state)
+				pub.write_current_state(workspace_state.workspace, "workspace")
 			end
 
 			if opts.save_windows then
@@ -148,6 +150,16 @@ function pub.event_driven_save(opts)
 
 		wezterm.emit("resurrect.state_manager.event_driven_save.finished", opts)
 	end
+
+	-- Save on first pane focus after startup (ensures current_state is written
+	-- even if the pane structure never changes during the session).
+	local initial_save_done = false
+	wezterm.on("pane-focus-changed", function(window, pane)
+		if not initial_save_done then
+			initial_save_done = true
+			do_save(window)
+		end
+	end)
 
 	-- Save when the pane/tab structure changes (new split, new tab, closed pane).
 	-- pane-focus-changed fires on every focus move, so we compare tab+pane counts
