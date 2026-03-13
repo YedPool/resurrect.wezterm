@@ -250,10 +250,23 @@ end
 ---@param file_path string
 function pub.delete_state(file_path)
 	wezterm.emit("resurrect.state_manager.delete_state.start", file_path)
-	-- Path confinement: reject traversal attempts
+	-- Path confinement: reject traversal attempts, absolute paths, and
+	-- non-JSON files to prevent arbitrary file deletion.
 	if file_path:find("%.%.") then
 		wezterm.log_error("resurrect: delete_state rejected path with '..': " .. file_path)
 		wezterm.emit("resurrect.error", "Invalid path: directory traversal not allowed")
+		return
+	end
+	-- Reject absolute paths (Unix /... or Windows C:\...)
+	if file_path:match("^[/\\]") or file_path:match("^%a:") then
+		wezterm.log_error("resurrect: delete_state rejected absolute path: " .. file_path)
+		wezterm.emit("resurrect.error", "Invalid path: absolute paths not allowed")
+		return
+	end
+	-- Only allow deleting .json state files
+	if not file_path:match("%.json$") then
+		wezterm.log_error("resurrect: delete_state rejected non-JSON path: " .. file_path)
+		wezterm.emit("resurrect.error", "Invalid path: only .json files can be deleted")
 		return
 	end
 	local path = pub.save_state_dir .. file_path

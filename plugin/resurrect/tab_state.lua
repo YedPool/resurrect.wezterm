@@ -4,6 +4,24 @@ local state_manager_mod = require("resurrect.state_manager")
 local process_handlers = require("resurrect.process_handlers")
 local pub = {}
 
+-- Characters that could enable command injection when a CWD is sent to
+-- a shell via send_text("cd <cwd>\r\n"). Even with shell_join_args quoting,
+-- different shells handle these differently, so we reject them outright.
+local UNSAFE_CWD_PATTERN = "[;&|`$%(%)%{%}]"
+
+-- Validate that a CWD path is safe to send as a shell command.
+---@param cwd string
+---@return boolean
+local function is_safe_cwd(cwd)
+	if not cwd or cwd == "" then
+		return false
+	end
+	if cwd:find(UNSAFE_CWD_PATTERN) then
+		return false
+	end
+	return true
+end
+
 ---Function used to split panes when mapping over the pane_tree
 ---@param opts restore_opts
 ---@return fun(acc: {active_pane: Pane, is_zoomed: boolean}, pane_tree: pane_tree): {active_pane: Pane, is_zoomed: boolean}
@@ -99,9 +117,13 @@ function pub.restore_tab(tab, tab_state, opts)
 	wezterm.emit("resurrect.tab_state.restore_tab.start")
 	if opts.pane then
 		tab_state.pane_tree.pane = opts.pane
-		-- Set the CWD of the reused pane to match saved state
-		if tab_state.pane_tree.cwd and tab_state.pane_tree.cwd ~= "" then
+		-- Set the CWD of the reused pane to match saved state.
+		-- Validate the CWD contains no shell metacharacters to prevent
+		-- command injection via tampered state files.
+		if is_safe_cwd(tab_state.pane_tree.cwd) then
 			opts.pane:send_text("cd " .. wezterm.shell_join_args({ tab_state.pane_tree.cwd }) .. "\r\n")
+		elseif tab_state.pane_tree.cwd and tab_state.pane_tree.cwd ~= "" then
+			wezterm.log_error("resurrect: rejected suspicious CWD: " .. tab_state.pane_tree.cwd)
 		end
 	else
 		local split_args = { cwd = tab_state.pane_tree.cwd }
@@ -121,7 +143,9 @@ function pub.restore_tab(tab, tab_state, opts)
 	end
 
 	local acc = pane_tree_mod.fold(tab_state.pane_tree, { is_zoomed = false }, make_splits(opts))
-	acc.active_pane:activate()
+	if acc.active_pane then
+		acc.active_pane:activate()
+	end
 	wezterm.emit("resurrect.tab_state.restore_tab.finished")
 end
 

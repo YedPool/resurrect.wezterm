@@ -120,6 +120,22 @@ local function has_flag(argv, flag)
 	return false
 end
 
+-- Validate that a string looks like a UUID/hex-dash identifier.
+-- Used to sanitize session IDs before embedding them in shell commands.
+---@param s string
+---@return boolean
+local function is_valid_session_id(s)
+	return s and s:match("^[%x%-]+$") ~= nil
+end
+
+-- Validate that a binary name is a known Claude Code executable.
+-- Prevents command injection via tampered process_info.name in state files.
+---@param name string
+---@return boolean
+local function is_valid_claude_binary(name)
+	return name and (name:match("^claude%d*$") or name:match("^claude%-[%w%-]+$")) ~= nil
+end
+
 -- Read session data from Claude Code's pane-sessions directory.
 -- The SessionStart hook writes JSON to ~/.claude/pane-sessions/<pane_id>.json
 -- containing { session_id, transcript_path, cwd, hook_event_name, source }.
@@ -129,12 +145,18 @@ function pub.read_pane_session(pane_id)
 	if not pane_id then
 		return nil
 	end
+	-- Validate pane_id is numeric to prevent path traversal
+	local id_str = tostring(pane_id)
+	if not id_str:match("^%d+$") then
+		wezterm.log_error("resurrect: read_pane_session rejected non-numeric pane_id: " .. id_str)
+		return nil
+	end
 	local home = os.getenv("HOME") or os.getenv("USERPROFILE")
 	if not home then
 		return nil
 	end
 	local sep = utils.separator
-	local path = home .. sep .. ".claude" .. sep .. "pane-sessions" .. sep .. tostring(pane_id) .. ".json"
+	local path = home .. sep .. ".claude" .. sep .. "pane-sessions" .. sep .. id_str .. ".json"
 	local f = io.open(path, "r")
 	if not f then
 		return nil
@@ -182,16 +204,28 @@ pub.register({
 	-- Build the restore command from saved process info.
 	-- Prioritizes --resume <session-id> over --continue.
 	-- Preserves --dangerously-skip-permissions if it was present.
+	-- All values from state files are validated before use to prevent
+	-- command injection via tampered JSON (input sanitization).
 	get_restore_cmd = function(process_info, pane_tree)
 		local argv = process_info.argv or {}
 		-- Use the saved executable name (e.g., "claude", "claude2") so
 		-- multi-account setups restore with the correct binary.
+		-- Validate the name is actually a claude binary to prevent injection.
 		local bin = process_info.name or process_info.executable or "claude"
+		if not is_valid_claude_binary(bin) then
+			wezterm.log_warn("resurrect: rejected invalid claude binary name: " .. tostring(bin))
+			bin = "claude"
+		end
 		local parts = { bin }
 
 		-- Session ID: check --resume, -r, --session-id
 		local session_id = parse_flag_value(argv, "--resume", "-r")
 			or parse_flag_value(argv, "--session-id")
+		-- Validate session ID is a hex/dash string (UUID format)
+		if session_id and not is_valid_session_id(session_id) then
+			wezterm.log_warn("resurrect: rejected invalid session_id: " .. tostring(session_id))
+			session_id = nil
+		end
 		if session_id then
 			table.insert(parts, "--resume")
 			table.insert(parts, session_id)
@@ -241,6 +275,12 @@ pub.register({
 			end
 		end
 
+		-- Validate session ID format before embedding in argv
+		if session_id and not is_valid_session_id(session_id) then
+			wezterm.log_warn("resurrect: sanitize rejected invalid session_id: " .. tostring(session_id))
+			session_id = nil
+		end
+
 		if session_id then
 			table.insert(clean, "--resume")
 			table.insert(clean, session_id)
@@ -285,12 +325,11 @@ function pub.setup_claude_session_hooks(settings_path)
 	local pane_sessions_dir = claude_dir .. sep .. "pane-sessions"
 
 	-- Ensure pane-sessions directory exists.
-	-- Use os.execute because this runs during plugin init where
-	-- wezterm.run_child_process is forbidden (yields across C-call boundary).
-	if utils.is_windows then
-		os.execute('cmd /c if not exist "' .. pane_sessions_dir .. '" mkdir "' .. pane_sessions_dir .. '" >nul 2>nul')
-	else
-		os.execute('mkdir -p "' .. pane_sessions_dir .. '" 2>/dev/null')
+	-- Use utils.shell_mkdir which validates the path (rejects shell
+	-- metacharacters) before passing it to os.execute.
+	if not utils.ensure_folder_exists(pane_sessions_dir) then
+		wezterm.log_error("resurrect: failed to create pane-sessions directory: " .. pane_sessions_dir)
+		return false
 	end
 
 	-- Resolve settings path
@@ -340,7 +379,13 @@ function pub.setup_claude_session_hooks(settings_path)
 	-- The hook command: Claude Code sends session JSON on stdin via the
 	-- SessionStart hook. We write it to a file keyed by WEZTERM_PANE env var.
 	-- WEZTERM_PANE is set by WezTerm in child shells and inherited by Claude.
-	local hook_command = "bash -c 'cat > \"$HOME/.claude/pane-sessions/${WEZTERM_PANE:-unknown}.json\"'"
+	-- The pane ID is validated as numeric to prevent path traversal via
+	-- crafted WEZTERM_PANE values (e.g., "../../.bashrc").
+	local hook_command = "bash -c '"
+		.. 'pane_id="${WEZTERM_PANE:-unknown}"; '
+		.. 'if [[ "$pane_id" =~ ^[0-9]+$ ]]; then '
+		.. 'cat > "$HOME/.claude/pane-sessions/${pane_id}.json"; '
+		.. "else echo \"resurrect: invalid WEZTERM_PANE: $pane_id\" >&2; cat > /dev/null; fi'"
 
 	table.insert(settings.hooks.SessionStart, {
 		matcher = "",
