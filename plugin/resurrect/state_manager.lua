@@ -26,6 +26,11 @@ end
 function pub.save_state(state, opt_name)
 	if state.window_states then
 		file_io.write_state(get_file_path(state.workspace, "workspace", opt_name), state, "workspace")
+		-- Always update current_state when saving a workspace so that
+		-- resurrect_on_gui_startup knows what to restore. Previously this
+		-- was only called from event_driven_save, which often never fired
+		-- before the user restarted WezTerm.
+		pub.write_current_state(state.workspace, "workspace")
 	elseif state.tabs then
 		file_io.write_state(get_file_path(state.title, "window", opt_name), state, "window")
 	elseif state.pane_tree then
@@ -151,10 +156,12 @@ function pub.event_driven_save(opts)
 		wezterm.emit("resurrect.state_manager.event_driven_save.finished", opts)
 	end
 
-	-- Save on first pane focus after startup (ensures current_state is written
-	-- even if the pane structure never changes during the session).
+	-- Save shortly after startup using update-status, which fires reliably
+	-- within seconds of window creation (unlike pane-focus-changed which
+	-- requires user interaction). This ensures current_state is written
+	-- before the user restarts WezTerm.
 	local initial_save_done = false
-	wezterm.on("pane-focus-changed", function(window, pane)
+	wezterm.on("update-status", function(window, pane)
 		if not initial_save_done then
 			initial_save_done = true
 			do_save(window)

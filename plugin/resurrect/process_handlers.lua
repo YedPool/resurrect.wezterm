@@ -9,6 +9,7 @@
 --       get_restore_cmd = function(info, _) return "lazygit" end,
 --   })
 local wezterm = require("wezterm") --[[@as Wezterm]]
+local utils = require("resurrect.utils")
 
 local pub = {}
 
@@ -132,7 +133,7 @@ local function read_pane_session(pane_id)
 	if not home then
 		return nil
 	end
-	local sep = package.config:sub(1, 1)
+	local sep = utils.separator
 	local path = home .. sep .. ".claude" .. sep .. "pane-sessions" .. sep .. tostring(pane_id) .. ".json"
 	local f = io.open(path, "r")
 	if not f then
@@ -279,14 +280,14 @@ function pub.setup_claude_session_hooks(settings_path)
 		return false
 	end
 
-	local sep = package.config:sub(1, 1)
+	local sep = utils.separator
 	local claude_dir = home .. sep .. ".claude"
 	local pane_sessions_dir = claude_dir .. sep .. "pane-sessions"
 
 	-- Ensure pane-sessions directory exists.
-	-- Use os.execute because this may run during plugin init where
+	-- Use os.execute because this runs during plugin init where
 	-- wezterm.run_child_process is forbidden (yields across C-call boundary).
-	if sep == "\\" then
+	if utils.is_windows then
 		os.execute('cmd /c if not exist "' .. pane_sessions_dir .. '" mkdir "' .. pane_sessions_dir .. '" >nul 2>nul')
 	else
 		os.execute('mkdir -p "' .. pane_sessions_dir .. '" 2>/dev/null')
@@ -351,21 +352,17 @@ function pub.setup_claude_session_hooks(settings_path)
 		},
 	})
 
-	-- Write back atomically (write to .tmp then rename)
+	-- Write directly (not atomic rename -- os.rename fails on Windows
+	-- when the target file already exists, causing silent failures).
 	local json_str = wezterm.json_encode(settings)
-	local tmp_path = settings_path .. ".tmp"
-	local wf = io.open(tmp_path, "w")
+	local wf = io.open(settings_path, "w")
 	if not wf then
-		wezterm.log_error("resurrect: cannot write Claude settings to " .. tmp_path)
+		wezterm.log_error("resurrect: cannot write Claude settings to " .. settings_path)
 		return false
 	end
 	wf:write(json_str)
+	wf:flush()
 	wf:close()
-	local rename_ok, rename_err = os.rename(tmp_path, settings_path)
-	if not rename_ok then
-		wezterm.log_error("resurrect: failed to rename " .. tmp_path .. " -> " .. settings_path .. ": " .. tostring(rename_err))
-		return false
-	end
 
 	wezterm.log_info("resurrect: Claude Code SessionStart hook configured at " .. settings_path)
 	return true
