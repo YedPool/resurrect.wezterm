@@ -68,12 +68,22 @@ local function pop_connected_right(root, panes)
 	end
 end
 
+-- Maximum recursion depth to prevent stack overflow from maliciously
+-- crafted state files with deeply nested pane trees.
+local MAX_PANE_DEPTH = 100
+
 ---@param root pane_tree | nil
 ---@param panes PaneInformation[]
+---@param depth? number current recursion depth (defaults to 0)
 ---@return pane_tree | nil
-local function insert_panes(root, panes)
+local function insert_panes(root, panes, depth)
+	depth = depth or 0
 	if root == nil then
 		return nil
+	end
+	if depth > MAX_PANE_DEPTH then
+		wezterm.log_error("resurrect: pane tree exceeds maximum depth of " .. MAX_PANE_DEPTH)
+		return root
 	end
 
 	-- Guard against duplicate processing in symmetric layouts
@@ -271,12 +281,12 @@ local function insert_panes(root, panes)
 
 	if #right > 0 then
 		local right_child = pop_connected_right(root, right)
-		root.right = insert_panes(right_child, right)
+		root.right = insert_panes(right_child, right, depth + 1)
 	end
 
 	if #bottom > 0 then
 		local bottom_child = pop_connected_bottom(root, bottom)
-		root.bottom = insert_panes(bottom_child, bottom)
+		root.bottom = insert_panes(bottom_child, bottom, depth + 1)
 	end
 
 	return root
@@ -291,10 +301,10 @@ function pub.create_pane_tree(panes)
 	return insert_panes(root, panes)
 end
 
----maps over the pane tree
+---maps over the pane tree (mutates in place)
 ---@param pane_tree pane_tree
 ---@param f fun(pane_tree: pane_tree): pane_tree
----@return nil
+---@return pane_tree|nil
 function pub.map(pane_tree, f)
 	if pane_tree == nil then
 		return nil

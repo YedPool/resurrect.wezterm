@@ -46,6 +46,13 @@ package.loaded["resurrect.instance_manager"] = {
   save_instance = function() end,
 }
 
+-- Stub workspace_state for save_workspace_full
+package.loaded["resurrect.workspace_state"] = {
+  get_workspace_state = function()
+    return { workspace = "test", window_states = {} }
+  end,
+}
+
 local search_paths = {
   -- repo root
   "./plugin/?.lua",

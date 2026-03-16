@@ -3,10 +3,6 @@ local dev = wezterm.plugin.require("https://github.com/chrisgve/dev.wezterm")
 
 local pub = {}
 
---- checks if the user is on windows
-local is_windows = wezterm.target_triple == "x86_64-pc-windows-msvc"
-local separator = is_windows and "\\" or "/"
-
 local function init()
 	-- enable_sub_modules()
 	local opts = {
@@ -15,7 +11,8 @@ local function init()
 	}
 	local plugin_path = dev.setup(opts)
 
-	require("resurrect.state_manager").change_state_save_dir(plugin_path .. separator .. "state" .. separator)
+	local sep = require("resurrect.utils").separator
+	require("resurrect.state_manager").change_state_save_dir(plugin_path .. sep .. "state" .. sep)
 
 	-- Export submodules
 	pub.workspace_state = require("resurrect.workspace_state")
@@ -41,7 +38,7 @@ init()
 ---   save_workspaces      = true
 ---   save_windows         = true
 ---   save_tabs            = true
----   keybindings          = true   -- add Alt+W/R/Shift+W/Shift+T bindings
+---   keybindings          = true   -- add Alt+S/R/W/Shift+W/Shift+T bindings
 ---   status_bar           = true   -- show save time + tab titles in right status
 ---   claude_hooks         = true   -- auto-configure Claude Code SessionStart hook
 ---   auto_restore_prompt  = true   -- show instance selector on startup if saved instances exist
@@ -95,11 +92,16 @@ function pub.setup(config, opts)
 	if opts.status_bar ~= false then
 		local last_save_time = nil
 
+		-- Listen to all save-finished events for status bar updates
 		wezterm.on("resurrect.state_manager.event_driven_save.finished", function()
 			last_save_time = os.date("%H:%M:%S")
 		end)
 
 		wezterm.on("resurrect.state_manager.periodic_save.finished", function()
+			last_save_time = os.date("%H:%M:%S")
+		end)
+
+		wezterm.on("resurrect.save.finished", function()
 			last_save_time = os.date("%H:%M:%S")
 		end)
 
@@ -178,13 +180,8 @@ function pub.setup(config, opts)
 			key = "s",
 			mods = "ALT",
 			action = wezterm.action_callback(function(win, pane)
-				local workspace_state = pub.workspace_state.get_workspace_state()
-				pub.state_manager.save_state(workspace_state)
-				pub.state_manager.write_current_state(workspace_state.workspace, "workspace")
-				if pub.instance_manager.instance_id then
-					pub.instance_manager.save_instance(workspace_state)
-				end
-				wezterm.emit("resurrect.state_manager.event_driven_save.finished")
+				pub.state_manager.save_workspace_full()
+				wezterm.emit("resurrect.save.finished")
 			end),
 		})
 

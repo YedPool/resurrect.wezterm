@@ -349,10 +349,11 @@ local function configure_hook_in_settings(target_settings_path, pane_sessions_di
 	-- crafted WEZTERM_PANE values (e.g., "../../.bashrc").
 	-- All instances write to the same pane-sessions dir (~/.claude/pane-sessions/)
 	-- so the restore logic can find session data regardless of which binary ran.
+	local safe_dir = pane_sessions_dir:gsub("\\", "/"):gsub("'", "'\\''")
 	local hook_command = "bash -c '"
 		.. 'pane_id="${WEZTERM_PANE:-unknown}"; '
 		.. 'if [[ "$pane_id" =~ ^[0-9]+$ ]]; then '
-		.. 'cat > "' .. pane_sessions_dir:gsub("\\", "/") .. '/${pane_id}.json"; '
+		.. 'cat > "' .. safe_dir .. '/${pane_id}.json"; '
 		.. "else echo \"resurrect: invalid WEZTERM_PANE: $pane_id\" >&2; cat > /dev/null; fi'"
 
 	table.insert(settings.hooks.SessionStart, {

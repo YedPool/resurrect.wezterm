@@ -76,16 +76,20 @@ local function find_json_files_recursive(base_path)
 			ps_cmd,
 		})
 	elseif utils.is_mac then
+		-- Use single-quote escaping to prevent shell injection via $() and backticks
+		local safe_path = base_path:gsub("'", "'\\''")
 		success, stdout, stderr = wezterm.run_child_process({
 			"sh",
 			"-c",
-			'find "' .. base_path:gsub('"', '\\"') .. '" -type f -name "*.json" -print0 | xargs -0 stat -f "%m %N"',
+			"find '" .. safe_path .. "' -type f -name '*.json' -print0 | xargs -0 stat -f '%m %N'",
 		})
 	else
+		-- Use single-quote escaping to prevent shell injection via $() and backticks
+		local safe_path = base_path:gsub("'", "'\\''")
 		success, stdout, stderr = wezterm.run_child_process({
 			"sh",
 			"-c",
-			'find "' .. base_path:gsub('"', '\\"') .. '" -type f -name "*.json" -printf "%T@ %p\\n" | awk \'{split($1, a, "."); print a[1], $2}\'',
+			"find '" .. safe_path .. "' -type f -name '*.json' -printf '%T@ %p\\n' | awk '{split($1, a, \".\"); print a[1], $2}'",
 		})
 	end
 
