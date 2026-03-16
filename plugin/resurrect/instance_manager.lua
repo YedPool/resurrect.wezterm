@@ -462,12 +462,47 @@ end
 -- Selector UI
 -- ---------------------------------------------------------------------------
 
---- Show the main instance selector. Offers restore, browse named saves,
---- rename, and delete modes.
+--- Restore one or more instances. The first instance reuses the existing
+--- window (via restore_opts.window) to avoid spawning an extra blank window.
+--- Subsequent instances get their own new windows.
+---@param instance_ids string[] array of instance IDs to restore
+---@param window table GuiWindow whose MuxWindow to reuse for the first restore
+---@param pane table Pane in that window
+---@param restore_opts table options passed to restore_workspace
+local function restore_instances(instance_ids, window, pane, restore_opts)
+	for i, id in ipairs(instance_ids) do
+		local old_meta = read_meta(id)
+		local workspace_state = pub.load_instance(id)
+		if workspace_state then
+			-- First instance reuses the current window to avoid extra blank shell
+			local opts = utils.tbl_deep_extend("force", restore_opts, {})
+			if i == 1 then
+				opts.window = pane:window()
+				opts.pane = pane
+			end
+
+			require("resurrect.workspace_state").restore_workspace(workspace_state, opts)
+
+			-- Carry over display_name from first restored instance
+			if i == 1 and old_meta and old_meta.display_name and old_meta.display_name ~= "" then
+				pub.display_name = old_meta.display_name
+			end
+
+			-- Auto-delete old instance after restore (it now has a new ID)
+			pub.delete_instance(id)
+		end
+	end
+end
+
+--- Show the main instance selector with multi-select support.
+--- Space (Enter) toggles selection, then pick "Restore selected" to restore all.
+--- Esc dismisses to start a fresh terminal session.
 ---@param window table GuiWindow
 ---@param pane table Pane
 ---@param restore_opts table options passed to restore_workspace
-function pub.show_instance_selector(window, pane, restore_opts)
+---@param selected? table set of already-selected instance IDs (for re-showing after toggle)
+function pub.show_instance_selector(window, pane, restore_opts, selected)
+	selected = selected or {}
 	local instances = pub.list_instances()
 
 	-- If no instances, fall through to fuzzy_load for named saves
@@ -477,12 +512,27 @@ function pub.show_instance_selector(window, pane, restore_opts)
 		return
 	end
 
-	-- Build choices
+	-- Build choices with selection markers
 	local choices = {}
+
+	-- Count selections
+	local sel_count = 0
+	for _ in pairs(selected) do sel_count = sel_count + 1 end
+
+	-- "Restore selected" at the top when there are selections
+	if sel_count > 0 then
+		table.insert(choices, {
+			id = "__RESTORE_SELECTED__",
+			label = ">>> Restore " .. sel_count .. " selected instance" .. (sel_count > 1 and "s" or "") .. " <<<",
+		})
+	end
+
+	-- Instance entries with [x] / [ ] markers
 	for _, entry in ipairs(instances) do
+		local marker = selected[entry.instance_id] and "[x] " or "[ ] "
 		table.insert(choices, {
 			id = entry.instance_id,
-			label = pub.format_instance_summary(entry.meta),
+			label = marker .. pub.format_instance_summary(entry.meta),
 		})
 	end
 
@@ -495,6 +545,19 @@ function pub.show_instance_selector(window, pane, restore_opts)
 		wezterm.action.InputSelector({
 			action = wezterm.action_callback(function(inner_win, inner_pane, id, label)
 				if not id then
+					-- Esc pressed: start fresh terminal (do nothing)
+					return
+				end
+
+				if id == "__RESTORE_SELECTED__" then
+					-- Restore all selected instances
+					local ids = {}
+					for _, entry in ipairs(instances) do
+						if selected[entry.instance_id] then
+							table.insert(ids, entry.instance_id)
+						end
+					end
+					restore_instances(ids, inner_win, inner_pane, restore_opts)
 					return
 				end
 
@@ -518,23 +581,16 @@ function pub.show_instance_selector(window, pane, restore_opts)
 					return
 				end
 
-				-- Default: restore the selected instance
-				local old_meta = read_meta(id)
-				local workspace_state = pub.load_instance(id)
-				if workspace_state then
-					require("resurrect.workspace_state").restore_workspace(workspace_state, restore_opts)
-
-					-- Carry over display_name from old instance
-					if old_meta and old_meta.display_name and old_meta.display_name ~= "" then
-						pub.display_name = old_meta.display_name
-					end
-
-					-- Auto-delete old instance after restore (it now has a new ID)
-					pub.delete_instance(id)
+				-- Toggle selection on this instance and re-show the selector
+				if selected[id] then
+					selected[id] = nil
+				else
+					selected[id] = true
 				end
+				pub.show_instance_selector(inner_win, inner_pane, restore_opts, selected)
 			end),
-			title = "Restore Instance",
-			description = "Select an instance to restore, or pick an action. Enter = accept, Esc = cancel",
+			title = "Restore Instances",
+			description = "Enter = toggle selection, then pick 'Restore selected'. Esc = start fresh terminal",
 			choices = choices,
 			fuzzy = false,
 		}),
@@ -657,20 +713,22 @@ function pub.auto_restore_on_startup()
 		return
 	end
 
-	-- Spawn a default window, then show the instance selector after a short
-	-- delay so the window is fully initialized.
+	-- Spawn a default window for the selector UI. The first restored instance
+	-- will reuse this window (via restore_opts.window) so no extra blank
+	-- shell window remains.
 	wezterm.mux.spawn_window({})
 
 	wezterm.time.call_after(1, function()
 		local gui_windows = wezterm.gui.gui_windows()
 		if #gui_windows > 0 then
 			local gui_win = gui_windows[1]
+			local active_pane = gui_win:active_pane()
 			local restore_opts = {
 				relative = true,
 				restore_text = true,
 				on_pane_restore = require("resurrect.tab_state").default_on_pane_restore,
 			}
-			pub.show_instance_selector(gui_win, gui_win:active_pane(), restore_opts)
+			pub.show_instance_selector(gui_win, active_pane, restore_opts)
 		end
 	end)
 end
