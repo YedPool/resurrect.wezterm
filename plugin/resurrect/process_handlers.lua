@@ -136,6 +136,9 @@ local function is_valid_claude_binary(name)
 	return name and (name:match("^claude%d*$") or name:match("^claude%-[%w%-]+$")) ~= nil
 end
 
+-- Use shared CWD validation from utils to prevent command injection.
+local is_safe_cwd = utils.is_safe_cwd
+
 -- Read session data from Claude Code's pane-sessions directory.
 -- The SessionStart hook writes JSON to ~/.claude/pane-sessions/<pane_id>.json
 -- containing { session_id, transcript_path, cwd, hook_event_name, source }.
@@ -240,7 +243,21 @@ pub.register({
 			table.insert(parts, "--dangerously-skip-permissions")
 		end
 
-		return wezterm.shell_join_args(parts)
+		local cmd = wezterm.shell_join_args(parts)
+
+		-- Claude Code must be started from the original working directory
+		-- for proper context loading and session restoration. Prepend a cd
+		-- command as a separate line so the shell changes directory before
+		-- launching Claude. Using \r\n between commands instead of && for
+		-- cross-shell compatibility (PowerShell 5.x does not support &&).
+		local cwd = process_info.cwd or (pane_tree and pane_tree.cwd)
+		if cwd and is_safe_cwd(cwd) then
+			cmd = "cd " .. wezterm.shell_join_args({ cwd }) .. "\r\n" .. cmd
+		elseif cwd then
+			wezterm.log_warn("resurrect: rejected unsafe CWD for Claude restore: " .. tostring(cwd))
+		end
+
+		return cmd
 	end,
 
 	-- At save time, clean up the raw node argv into a portable form.
