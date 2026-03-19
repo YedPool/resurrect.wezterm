@@ -2,25 +2,12 @@ local wezterm = require("wezterm") --[[@as Wezterm]] --- this type cast invokes 
 local pane_tree_mod = require("resurrect.pane_tree")
 local state_manager_mod = require("resurrect.state_manager")
 local process_handlers = require("resurrect.process_handlers")
+local utils = require("resurrect.utils")
 local pub = {}
 
--- Characters that could enable command injection when a CWD is sent to
--- a shell via send_text("cd <cwd>\r\n"). Even with shell_join_args quoting,
--- different shells handle these differently, so we reject them outright.
-local UNSAFE_CWD_PATTERN = "[;&|`$%(%)%{%}]"
-
--- Validate that a CWD path is safe to send as a shell command.
----@param cwd string
----@return boolean
-local function is_safe_cwd(cwd)
-	if not cwd or cwd == "" then
-		return false
-	end
-	if cwd:find(UNSAFE_CWD_PATTERN) then
-		return false
-	end
-	return true
-end
+-- Use shared CWD validation from utils to prevent command injection
+-- when sending cd commands via send_text().
+local is_safe_cwd = utils.is_safe_cwd
 
 ---Function used to split panes when mapping over the pane_tree
 ---@param opts restore_opts

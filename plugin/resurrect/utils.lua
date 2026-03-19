@@ -199,6 +199,24 @@ function utils.ensure_folder_exists(path)
 	return true
 end
 
+-- Characters that could enable command injection when a CWD is embedded in
+-- a shell command via send_text(). Blocks shell metacharacters plus \r\n
+-- (a newline in a path from a tampered state file could inject commands).
+utils.UNSAFE_CWD_PATTERN = "[;&|`$%(%)%{%}\r\n]"
+
+-- Validate that a CWD path is safe to embed in a shell command.
+---@param cwd string
+---@return boolean
+function utils.is_safe_cwd(cwd)
+	if not cwd or cwd == "" then
+		return false
+	end
+	if cwd:find(utils.UNSAFE_CWD_PATTERN) then
+		return false
+	end
+	return true
+end
+
 -- deep copy
 ---@param original table
 ---@return any copy

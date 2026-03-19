@@ -136,22 +136,8 @@ local function is_valid_claude_binary(name)
 	return name and (name:match("^claude%d*$") or name:match("^claude%-[%w%-]+$")) ~= nil
 end
 
--- Characters that could enable command injection when a CWD is used in
--- a shell command. Matches the same pattern used in tab_state.lua.
-local UNSAFE_CWD_PATTERN = "[;&|`$%(%)%{%}]"
-
--- Validate that a CWD path is safe to embed in a shell command.
----@param cwd string
----@return boolean
-local function is_safe_cwd(cwd)
-	if not cwd or cwd == "" then
-		return false
-	end
-	if cwd:find(UNSAFE_CWD_PATTERN) then
-		return false
-	end
-	return true
-end
+-- Use shared CWD validation from utils to prevent command injection.
+local is_safe_cwd = utils.is_safe_cwd
 
 -- Read session data from Claude Code's pane-sessions directory.
 -- The SessionStart hook writes JSON to ~/.claude/pane-sessions/<pane_id>.json
