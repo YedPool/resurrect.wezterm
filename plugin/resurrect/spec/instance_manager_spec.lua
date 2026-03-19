@@ -89,6 +89,14 @@ local wezterm_stub = {
         if tc then
             result.tab_count = tonumber(tc)
         end
+        local wc = str:match('"window_count":(%d+)')
+        if wc then
+            result.window_count = tonumber(wc)
+        end
+        local pc = str:match('"pane_count":(%d+)')
+        if pc then
+            result.pane_count = tonumber(pc)
+        end
         -- Parse tab_summaries array
         local summaries_str = str:match('"tab_summaries":%[([^%]]*)%]')
         if summaries_str then
@@ -96,6 +104,18 @@ local wezterm_stub = {
             for s in summaries_str:gmatch('"([^"]*)"') do
                 table.insert(result.tab_summaries, s)
             end
+        end
+        -- Parse projects array
+        local projects_str = str:match('"projects":%[([^%]]*)%]')
+        if projects_str then
+            result.projects = {}
+            for s in projects_str:gmatch('"([^"]*)"') do
+                table.insert(result.projects, s)
+            end
+        end
+        local ws_name = str:match('"workspace":"([^"]*)"')
+        if ws_name then
+            result.workspace = ws_name
         end
         -- Parse workspace_state (just mark it present)
         if str:find('"workspace_state"') then
@@ -396,63 +416,171 @@ describe("instance_manager", function()
 
     -- ----- Display formatting -----
     describe("format_instance_summary", function()
-        it("formats unnamed instance with date", function()
+        it("formats unnamed instance with enhanced meta", function()
             local meta = {
                 last_save_epoch = os.time(),
-                tab_count = 2,
-                tab_summaries = { "Claude Code", "PowerShell" },
+                tab_count = 7,
+                tab_summaries = {},
+                window_count = 2,
+                pane_count = 11,
+                projects = { "Orahvision", "project-monopoly" },
             }
             local summary = instance_manager.format_instance_summary(meta)
             assert.is_string(summary)
-            assert.truthy(summary:find("Claude Code"))
-            assert.truthy(summary:find("PowerShell"))
-            assert.truthy(summary:find("%[2 tabs%]"))
-            assert.truthy(summary:find(" -- "))
+            assert.truthy(summary:find("^%[Unnamed%]"), "should start with [Unnamed]")
+            assert.truthy(summary:find("2 windows"), "should show window count")
+            assert.truthy(summary:find("7 tabs"), "should show tab count")
+            assert.truthy(summary:find("11 panes"), "should show pane count")
+            assert.truthy(summary:find("Orahvision"), "should show project name")
+            assert.truthy(summary:find("project%-monopoly"), "should show project name")
         end)
 
-        it("formats named instance with display_name", function()
+        it("formats named instance with enhanced meta", function()
             local meta = {
-                display_name = "Orahvision Dev",
+                display_name = "Orahvision",
                 last_save_epoch = os.time(),
                 tab_count = 3,
-                tab_summaries = { "Claude Code", "PowerShell", "Claude Code" },
-            }
-            local summary = instance_manager.format_instance_summary(meta)
-            assert.truthy(summary:find("Orahvision Dev"))
-            assert.truthy(summary:find("Claude Code x2"))
-            assert.truthy(summary:find("PowerShell"))
-            assert.truthy(summary:find("%[3 tabs%]"))
-        end)
-
-        it("shows singular 'tab' for single tab", function()
-            local meta = {
-                last_save_epoch = os.time(),
-                tab_count = 1,
-                tab_summaries = { "PowerShell" },
-            }
-            local summary = instance_manager.format_instance_summary(meta)
-            assert.truthy(summary:find("%[1 tab%]"))
-            -- Should NOT say "1 tabs"
-            assert.falsy(summary:find("%[1 tabs%]"))
-        end)
-
-        it("handles empty tab summaries", function()
-            local meta = {
-                last_save_epoch = os.time(),
-                tab_count = 0,
                 tab_summaries = {},
+                window_count = 1,
+                pane_count = 5,
+                projects = { "Orahvision" },
             }
             local summary = instance_manager.format_instance_summary(meta)
-            assert.truthy(summary:find("%(empty%)"))
+            assert.truthy(summary:find("^%[Orahvision%]"), "should start with [DisplayName]")
+            assert.truthy(summary:find("1 window,"), "should show singular window")
+            assert.truthy(summary:find("3 tabs"), "should show tab count")
+            assert.truthy(summary:find("5 panes"), "should show pane count")
+            -- Named instances should NOT have a date
+            assert.falsy(summary:find("%a%a%a %d%d %d%d:%d%d"), "named instances should not show date")
         end)
 
-        it("handles missing last_save_epoch", function()
+        it("shows singular forms for single counts", function()
             local meta = {
+                last_save_epoch = os.time(),
                 tab_count = 1,
-                tab_summaries = { "Shell" },
+                tab_summaries = {},
+                window_count = 1,
+                pane_count = 1,
+                projects = {},
             }
             local summary = instance_manager.format_instance_summary(meta)
-            assert.truthy(summary:find("Unknown"))
+            assert.truthy(summary:find("1 window,"), "singular window")
+            assert.truthy(summary:find("1 tab,"), "singular tab")
+            assert.truthy(summary:find("1 pane"), "singular pane")
+            assert.falsy(summary:find("1 windows"), "should not say '1 windows'")
+            assert.falsy(summary:find("1 tabs"), "should not say '1 tabs'")
+            assert.falsy(summary:find("1 panes"), "should not say '1 panes'")
+        end)
+
+        it("backward compat: old meta without window_count/pane_count", function()
+            local meta = {
+                last_save_epoch = os.time(),
+                tab_count = 3,
+                tab_summaries = { "Claude Code", "PowerShell" },
+            }
+            local summary = instance_manager.format_instance_summary(meta)
+            assert.truthy(summary:find("^%[Unnamed%]"), "should start with [Unnamed]")
+            assert.truthy(summary:find("3 tabs"), "should show tab count")
+            -- Should NOT show windows or panes
+            assert.falsy(summary:find("window"), "old meta should not show windows")
+            assert.falsy(summary:find("pane"), "old meta should not show panes")
+        end)
+
+        it("handles missing last_save_epoch for unnamed", function()
+            local meta = {
+                tab_count = 1,
+                tab_summaries = {},
+                window_count = 1,
+                pane_count = 1,
+            }
+            local summary = instance_manager.format_instance_summary(meta)
+            assert.truthy(summary:find("^%[Unnamed%] %- "), "should have [Unnamed] with no date")
+        end)
+
+        it("shows no projects suffix when projects is empty", function()
+            local meta = {
+                last_save_epoch = os.time(),
+                tab_count = 2,
+                tab_summaries = {},
+                window_count = 1,
+                pane_count = 2,
+                projects = {},
+            }
+            local summary = instance_manager.format_instance_summary(meta)
+            assert.falsy(summary:find(" %-%- "), "should not have -- when no projects")
+        end)
+    end)
+
+    -- ----- Pane counting -----
+    describe("count_panes_in_tree", function()
+        local count_panes_in_tree = instance_manager._test.count_panes_in_tree
+
+        it("returns 0 for nil", function()
+            assert.equals(0, count_panes_in_tree(nil))
+        end)
+
+        it("returns 1 for a single pane (no splits)", function()
+            local node = { cwd = "/home/user", left = 0, top = 0 }
+            assert.equals(1, count_panes_in_tree(node))
+        end)
+
+        it("counts horizontal split (right child)", function()
+            local node = {
+                cwd = "/home/user",
+                left = 0, top = 0,
+                right = { cwd = "/home/user", left = 50, top = 0 },
+            }
+            assert.equals(2, count_panes_in_tree(node))
+        end)
+
+        it("counts vertical split (bottom child)", function()
+            local node = {
+                cwd = "/home/user",
+                left = 0, top = 0,
+                bottom = { cwd = "/home/user", left = 0, top = 20 },
+            }
+            assert.equals(2, count_panes_in_tree(node))
+        end)
+
+        it("counts nested splits", function()
+            local node = {
+                cwd = "/a", left = 0, top = 0,
+                right = {
+                    cwd = "/b", left = 50, top = 0,
+                    bottom = { cwd = "/c", left = 50, top = 20 },
+                },
+            }
+            assert.equals(3, count_panes_in_tree(node))
+        end)
+    end)
+
+    -- ----- Project name extraction -----
+    describe("extract_project_name", function()
+        local extract_project_name = instance_manager._test.extract_project_name
+
+        it("extracts name after /Code/", function()
+            assert.equals("project-monopoly",
+                extract_project_name("C:/Users/yedid/Documents/Code/project-monopoly/backend"))
+        end)
+
+        it("strips Worktrees suffix", function()
+            assert.equals("project-monopoly",
+                extract_project_name("C:/Users/yedid/Documents/Code/project-monopoly Worktrees/feature-branch"))
+        end)
+
+        it("handles backslashes", function()
+            assert.equals("Orahvision",
+                extract_project_name("C:\\Users\\yedid\\Documents\\Code\\Orahvision\\src"))
+        end)
+
+        it("falls back to last component without /Code/", function()
+            assert.equals("myproject",
+                extract_project_name("/home/user/myproject"))
+        end)
+
+        it("handles trailing slash", function()
+            assert.equals("project-monopoly",
+                extract_project_name("C:/Users/yedid/Documents/Code/project-monopoly/"))
         end)
     end)
 

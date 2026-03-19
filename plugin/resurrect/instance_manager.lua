@@ -78,10 +78,19 @@ local function sanitize_display_string(str)
 	end
 	-- Strip ANSI escape sequences (ESC [ ... m and similar)
 	str = str:gsub(string.char(27) .. "%[[^m]*m", "")
-	-- Strip all remaining control characters (ASCII 0-31 except tab/newline)
-	str = str:gsub("[\0-\8\11-\12\14-\31]", "")
-	-- Replace tabs and newlines with spaces
-	str = str:gsub("[\9\10\13]", " ")
+	-- Strip all control characters (ASCII 0-31): replace each byte with ""
+	-- if it is a control char. Uses byte-level check to avoid Lua 5.1 pattern
+	-- issues with literal null bytes in character classes.
+	str = str:gsub(".", function(c)
+		local b = string.byte(c)
+		if b <= 31 then
+			-- Preserve tab/newline/CR as spaces (for readability)
+			if b == 9 or b == 10 or b == 13 then
+				return " "
+			end
+			return ""
+		end
+	end)
 	return str
 end
 
@@ -169,6 +178,115 @@ local function count_tabs(workspace_state)
 	return count
 end
 
+--- Count panes in a pane tree node recursively.
+--- The tree uses .right (horizontal split) and .bottom (vertical split) as
+--- child pointers. .left and .top are pixel coordinates (numbers), not children.
+---@param node table|nil
+---@return number
+local function count_panes_in_tree(node)
+	if not node or type(node) ~= "table" then
+		return 0
+	end
+	local count = 1
+	if type(node.right) == "table" then
+		count = count + count_panes_in_tree(node.right)
+	end
+	if type(node.bottom) == "table" then
+		count = count + count_panes_in_tree(node.bottom)
+	end
+	return count
+end
+
+--- Count total panes across all windows and tabs in a workspace state.
+---@param workspace_state table
+---@return number
+local function count_panes(workspace_state)
+	local count = 0
+	if not workspace_state or not workspace_state.window_states then
+		return count
+	end
+	for _, win_state in ipairs(workspace_state.window_states) do
+		if win_state.tabs then
+			for _, tab in ipairs(win_state.tabs) do
+				count = count + count_panes_in_tree(tab.pane_tree)
+			end
+		end
+	end
+	return count
+end
+
+--- Collect all CWDs from a pane tree node recursively.
+---@param node table|nil
+---@param cwds string[]
+local function collect_cwds_from_tree(node, cwds)
+	if not node or type(node) ~= "table" then
+		return
+	end
+	if node.cwd and type(node.cwd) == "string" and node.cwd ~= "" then
+		table.insert(cwds, node.cwd)
+	end
+	if type(node.right) == "table" then
+		collect_cwds_from_tree(node.right, cwds)
+	end
+	if type(node.bottom) == "table" then
+		collect_cwds_from_tree(node.bottom, cwds)
+	end
+end
+
+--- Extract a project name from a CWD path.
+--- Looks for /Code/ in the path and takes the first component after it,
+--- stripping " Worktrees" suffix. Falls back to the last path component.
+---@param cwd string
+---@return string
+local function extract_project_name(cwd)
+	-- Normalize separators to forward slash
+	local normalized = cwd:gsub("\\", "/")
+	-- Remove trailing slash
+	normalized = normalized:gsub("/$", "")
+
+	-- Look for /Code/ and take the first component after it
+	local after_code = normalized:match("/Code/([^/]+)")
+	if after_code then
+		-- Strip " Worktrees" suffix (e.g. "project-monopoly Worktrees" -> "project-monopoly")
+		after_code = after_code:gsub(" Worktrees$", "")
+		return after_code
+	end
+
+	-- Fallback: last path component
+	local last = normalized:match("([^/]+)$")
+	return last or normalized
+end
+
+--- Extract deduplicated, sorted project names from all pane CWDs.
+---@param workspace_state table
+---@return string[]
+local function extract_project_names(workspace_state)
+	local cwds = {}
+	if not workspace_state or not workspace_state.window_states then
+		return {}
+	end
+	for _, win_state in ipairs(workspace_state.window_states) do
+		if win_state.tabs then
+			for _, tab in ipairs(win_state.tabs) do
+				collect_cwds_from_tree(tab.pane_tree, cwds)
+			end
+		end
+	end
+
+	-- Extract project names and deduplicate
+	local seen = {}
+	local names = {}
+	for _, cwd in ipairs(cwds) do
+		local name = extract_project_name(cwd)
+		if name and name ~= "" and not seen[name] then
+			seen[name] = true
+			table.insert(names, name)
+		end
+	end
+	table.sort(names)
+	return names
+end
+
 -- ---------------------------------------------------------------------------
 -- Core CRUD
 -- ---------------------------------------------------------------------------
@@ -205,6 +323,10 @@ function pub.save_instance(workspace_state)
 		last_save = os.date("%Y-%m-%dT%H:%M:%S"),
 		tab_count = count_tabs(workspace_state),
 		tab_summaries = tab_summaries,
+		window_count = workspace_state.window_states and #workspace_state.window_states or 0,
+		pane_count = count_panes(workspace_state),
+		projects = extract_project_names(workspace_state),
+		workspace = workspace_state.workspace,
 	}
 	write_meta(pub.instance_id, meta)
 
@@ -340,66 +462,61 @@ end
 -- Display formatting
 -- ---------------------------------------------------------------------------
 
---- Deduplicate an array of strings and format with counts.
---- {"A", "B", "A"} -> {"A x2", "B"}. Preserves first-seen order.
----@param items string[]
----@return string[]
-local function deduplicate_with_counts(items)
-	local counts = {}
-	local order = {}
-	for _, s in ipairs(items) do
-		if not counts[s] then
-			counts[s] = 0
-			table.insert(order, s)
-		end
-		counts[s] = counts[s] + 1
-	end
-	local parts = {}
-	for _, name in ipairs(order) do
-		if counts[name] > 1 then
-			table.insert(parts, name .. " x" .. counts[name])
-		else
-			table.insert(parts, name)
-		end
-	end
-	return parts
-end
-
 --- Format an instance summary line for the InputSelector.
---- Named:   "Orahvision Dev -- Claude Code, PowerShell [2 tabs]"
---- Unnamed: "Mar 13 16:45 -- Claude Code, PowerShell [2 tabs]"
+--- New format (with enhanced meta):
+---   Named:   "[Orahvision] - 1 window, 3 tabs, 5 panes -- Orahvision"
+---   Unnamed: "[Unnamed] Mar 13 16:45 - 2 windows, 7 tabs, 11 panes -- project-monopoly, Orahvision"
+--- Old format (backward compat, no window_count/pane_count):
+---   "[Unnamed] Mar 13 16:45 - 3 tabs"
 ---@param meta table
 ---@return string
 function pub.format_instance_summary(meta)
-	-- Sanitize tab summaries to prevent terminal escape injection
-	local summaries = {}
-	for _, s in ipairs(meta.tab_summaries or {}) do
-		table.insert(summaries, sanitize_display_string(s))
-	end
-
-	local parts = deduplicate_with_counts(summaries)
-	local tab_str = table.concat(parts, ", ")
-	if tab_str == "" then
-		tab_str = "(empty)"
-	end
-
-	local tab_count = meta.tab_count or 0
-	local tab_label = tab_count == 1 and "1 tab" or (tab_count .. " tabs")
-
-	-- Prefix: display_name or formatted date (sanitized)
-	local prefix
+	-- Name prefix: [DisplayName] or [Unnamed]
+	local name_tag
 	if meta.display_name and meta.display_name ~= "" then
-		prefix = sanitize_display_string(meta.display_name)
+		name_tag = "[" .. sanitize_display_string(meta.display_name) .. "]"
 	else
+		name_tag = "[Unnamed]"
+	end
+
+	-- Date suffix for unnamed instances
+	local date_str = ""
+	if not meta.display_name or meta.display_name == "" then
 		local epoch = meta.last_save_epoch or 0
 		if epoch > 0 then
-			prefix = os.date("%b %d %H:%M", epoch)
-		else
-			prefix = "Unknown"
+			date_str = " " .. os.date("%b %d %H:%M", epoch)
 		end
 	end
 
-	return prefix .. " -- " .. tab_str .. " [" .. tab_label .. "]"
+	-- Build counts string
+	local counts_parts = {}
+	local window_count = meta.window_count or 0
+	local tab_count = meta.tab_count or 0
+	local pane_count = meta.pane_count or 0
+
+	if window_count > 0 then
+		-- Enhanced format: windows, tabs, panes
+		table.insert(counts_parts, window_count == 1 and "1 window" or (window_count .. " windows"))
+		table.insert(counts_parts, tab_count == 1 and "1 tab" or (tab_count .. " tabs"))
+		table.insert(counts_parts, pane_count == 1 and "1 pane" or (pane_count .. " panes"))
+	else
+		-- Backward compat: old .meta without window_count/pane_count
+		table.insert(counts_parts, tab_count == 1 and "1 tab" or (tab_count .. " tabs"))
+	end
+
+	local counts_str = table.concat(counts_parts, ", ")
+
+	-- Projects suffix
+	local projects_str = ""
+	if meta.projects and #meta.projects > 0 then
+		local sanitized = {}
+		for _, p in ipairs(meta.projects) do
+			table.insert(sanitized, sanitize_display_string(p))
+		end
+		projects_str = " -- " .. table.concat(sanitized, ", ")
+	end
+
+	return name_tag .. date_str .. " - " .. counts_str .. projects_str
 end
 
 --- Rename an instance by updating its .meta display_name field.
@@ -732,5 +849,13 @@ function pub.auto_restore_on_startup()
 		end
 	end)
 end
+
+-- Expose internals for unit testing only
+pub._test = {
+	count_panes_in_tree = count_panes_in_tree,
+	count_panes = count_panes,
+	extract_project_name = extract_project_name,
+	extract_project_names = extract_project_names,
+}
 
 return pub
