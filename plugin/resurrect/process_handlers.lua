@@ -279,17 +279,23 @@ pub.register({
 		end
 		local clean = { bin }
 
-		-- Extract session ID from argv first (explicit --resume or --session-id)
-		local session_id = parse_flag_value(argv, "--resume", "-r")
-			or parse_flag_value(argv, "--session-id")
-
-		-- Fall back to the pane-sessions file written by the SessionStart hook.
-		-- This covers fresh sessions that were started without --resume.
-		if not session_id and pane_id then
+		-- Read the pane-session file first -- it has the most recent session ID,
+		-- kept fresh by the Stop hook that fires after every Claude response.
+		-- This is critical because the session ID can change mid-conversation
+		-- (e.g., during context compaction), making the argv value stale.
+		local session_id = nil
+		if pane_id then
 			local session_data = pub.read_pane_session(pane_id)
 			if session_data and session_data.session_id then
 				session_id = session_data.session_id
 			end
+		end
+
+		-- Fall back to argv if pane-session file is unavailable (e.g., hook
+		-- not yet configured, or WEZTERM_PANE env var not set).
+		if not session_id then
+			session_id = parse_flag_value(argv, "--resume", "-r")
+				or parse_flag_value(argv, "--session-id")
 		end
 
 		-- Validate session ID format before embedding in argv
@@ -336,31 +342,41 @@ local function configure_hook_in_settings(target_settings_path, pane_sessions_di
 		end
 	end
 
-	-- Check if our hook is already present (idempotency check).
-	-- We look for any SessionStart hook whose command references "pane-sessions".
-	if settings.hooks and settings.hooks.SessionStart then
-		for _, entry in ipairs(settings.hooks.SessionStart) do
-			if entry.hooks then
-				for _, hook in ipairs(entry.hooks) do
-					if hook.command and hook.command:find("pane%-sessions") then
-						-- Already configured -- nothing to do
-						return true
+	-- Check if our hooks are already present (idempotency check).
+	-- We look for pane-sessions hooks on both SessionStart and Stop.
+	-- If both exist, nothing to do.
+	local has_session_start = false
+	local has_stop = false
+	if settings.hooks then
+		for _, event_name in ipairs({ "SessionStart", "Stop" }) do
+			if settings.hooks[event_name] then
+				for _, entry in ipairs(settings.hooks[event_name]) do
+					if entry.hooks then
+						for _, hook in ipairs(entry.hooks) do
+							if hook.command and hook.command:find("pane%-sessions") then
+								if event_name == "SessionStart" then
+									has_session_start = true
+								else
+									has_stop = true
+								end
+							end
+						end
 					end
 				end
 			end
 		end
+	end
+	if has_session_start and has_stop then
+		return true
 	end
 
 	-- Build the hook structure
 	if not settings.hooks then
 		settings.hooks = {}
 	end
-	if not settings.hooks.SessionStart then
-		settings.hooks.SessionStart = {}
-	end
 
-	-- The hook command: Claude Code sends session JSON on stdin via the
-	-- SessionStart hook. We write it to a file keyed by WEZTERM_PANE env var.
+	-- The hook command: Claude Code sends session JSON on stdin for every
+	-- hook event. We write it to a file keyed by WEZTERM_PANE env var.
 	-- WEZTERM_PANE is set by WezTerm in child shells and inherited by Claude.
 	-- The pane ID is validated as numeric to prevent path traversal via
 	-- crafted WEZTERM_PANE values (e.g., "../../.bashrc").
@@ -373,7 +389,7 @@ local function configure_hook_in_settings(target_settings_path, pane_sessions_di
 		.. 'cat > "' .. safe_dir .. '/${pane_id}.json"; '
 		.. "else echo \"resurrect: invalid WEZTERM_PANE: $pane_id\" >&2; cat > /dev/null; fi'"
 
-	table.insert(settings.hooks.SessionStart, {
+	local hook_entry = {
 		matcher = "",
 		hooks = {
 			{
@@ -381,7 +397,26 @@ local function configure_hook_in_settings(target_settings_path, pane_sessions_di
 				command = hook_command,
 			},
 		},
-	})
+	}
+
+	-- SessionStart: captures session ID when Claude starts or resumes.
+	if not has_session_start then
+		if not settings.hooks.SessionStart then
+			settings.hooks.SessionStart = {}
+		end
+		table.insert(settings.hooks.SessionStart, hook_entry)
+	end
+
+	-- Stop: refreshes session ID after every Claude response. This keeps
+	-- the pane-session file current even if the session ID changes mid-
+	-- conversation (e.g., during context compaction). Every hook event
+	-- includes session_id in its stdin payload, so the same command works.
+	if not has_stop then
+		if not settings.hooks.Stop then
+			settings.hooks.Stop = {}
+		end
+		table.insert(settings.hooks.Stop, hook_entry)
+	end
 
 	-- Write directly (not atomic rename -- os.rename fails on Windows
 	-- when the target file already exists, causing silent failures).
@@ -399,12 +434,15 @@ local function configure_hook_in_settings(target_settings_path, pane_sessions_di
 	return true
 end
 
---- Ensure Claude Code's SessionStart hook is configured to capture session IDs
---- per WezTerm pane. This is idempotent -- safe to call on every WezTerm startup.
+--- Ensure Claude Code hooks are configured to capture session IDs per WezTerm
+--- pane. This is idempotent -- safe to call on every WezTerm startup.
 ---
 --- What it does:
 ---   1. Creates ~/.claude/pane-sessions/ directory (where session data is stored)
----   2. Configures the SessionStart hook in ~/.claude/settings.json
+---   2. Configures SessionStart + Stop hooks in ~/.claude/settings.json
+---      - SessionStart: captures session ID when Claude starts or resumes
+---      - Stop: refreshes session ID after every response, keeping it current
+---        even if the ID changes mid-conversation (e.g., context compaction)
 ---   3. Also configures ~/.claude-alt/settings.json if it exists (for claude2
 ---      multi-account setups that use CLAUDE_CONFIG_DIR)
 ---   4. All instances write to the same pane-sessions directory so restore
