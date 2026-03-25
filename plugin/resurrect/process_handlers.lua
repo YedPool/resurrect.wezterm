@@ -430,7 +430,7 @@ local function configure_hook_in_settings(target_settings_path, pane_sessions_di
 	wf:flush()
 	wf:close()
 
-	wezterm.log_info("resurrect: Claude Code SessionStart hook configured at " .. target_settings_path)
+	wezterm.log_info("resurrect: Claude Code hooks configured at " .. target_settings_path)
 	return true
 end
 
